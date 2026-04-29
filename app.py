@@ -5,8 +5,6 @@ from datetime import datetime
 import json
 import requests, base64
 
-invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-stream = True
 
 app = Flask(__name__)
 CORS(app)
@@ -28,20 +26,19 @@ def guardar_conversaciones(conversaciones):
 def llamar_nvidia(messages):
     """Llama a la API de NVIDIA"""
     headers = {
-        "Authorization": "Bearer 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",
-        "Accept": "text/event-stream" if stream else "application/json"
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Accept": "application/json"
     }
-    
+
     payload = {
         "model": "mistralai/mistral-medium-3.5-128b",
-        "reasoning_effort": "high",
-        "messages": [{"role":"user","content":""}],
-        "max_tokens": 16384,
+        "messages": messages,
+        "max_tokens": 1024,
         "temperature": 0.70,
         "top_p": 1.00,
-        "stream": stream
+        "stream": False
     }
-    
+
     try:
         response = requests.post(
             f"{NVIDIA_BASE_URL}/chat/completions",
