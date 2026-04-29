@@ -3,8 +3,7 @@ from flask_cors import CORS
 import os
 from datetime import datetime
 import json
-import requests, base64
-
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -24,27 +23,27 @@ def guardar_conversaciones(conversaciones):
         json.dump(conversaciones, f, ensure_ascii=False, indent=2)
 
 def llamar_nvidia(messages):
-    """Llama a la API de NVIDIA"""
+    """Llama a la API de NVIDIA con modelo Qwen 3.5"""
     headers = {
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Accept": "application/json"
+        "Content-Type": "application/json"
     }
-
+    
     payload = {
-        "model": "mistralai/mistral-medium-3.5-128b",
+        "model": "qwen/qwen3.5-122b-a10b",
         "messages": messages,
-        "max_tokens": 1024,
-        "temperature": 0.70,
-        "top_p": 1.00,
-        "stream": False
+        "max_tokens": 2048,
+        "temperature": 0.60,
+        "top_p": 0.95,
+        "chat_template_kwargs": {"enable_thinking": False}
     }
-
+    
     try:
         response = requests.post(
             f"{NVIDIA_BASE_URL}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=60
         )
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
@@ -79,7 +78,7 @@ def chat():
         
         historial_api.append({"role": "user", "content": user_message})
         
-        # Llamar a NVIDIA
+        # Llamar a NVIDIA con Qwen
         ai_response = llamar_nvidia(historial_api)
         
         conversaciones[conversation_id]["messages"].append({
@@ -135,4 +134,3 @@ def eliminar_conversacion(conversation_id):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
-    
