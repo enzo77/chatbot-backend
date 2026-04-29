@@ -3,11 +3,14 @@ from flask_cors import CORS
 import os
 from datetime import datetime
 import json
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
 CONVERSACIONES_FILE = "conversaciones.json"
+NVIDIA_API_KEY = os.getenv("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")
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 def cargar_conversaciones():
     if os.path.exists(CONVERSACIONES_FILE):
@@ -18,6 +21,32 @@ def cargar_conversaciones():
 def guardar_conversaciones(conversaciones):
     with open(CONVERSACIONES_FILE, "w", encoding="utf-8") as f:
         json.dump(conversaciones, f, ensure_ascii=False, indent=2)
+
+def llamar_nvidia(messages):
+    """Llama a la API de NVIDIA"""
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "mistralai/mistral-medium-3.5-128b",
+        "messages": messages,
+        "max_tokens": 1000,
+        "temperature": 0.7
+    }
+    
+    try:
+        response = requests.post(
+            f"{NVIDIA_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Error en API: {str(e)}"
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -47,8 +76,8 @@ def chat():
         
         historial_api.append({"role": "user", "content": user_message})
         
-        # Respuesta temporal sin API
-        ai_response = f"Echo: {user_message}"
+        # Llamar a NVIDIA
+        ai_response = llamar_nvidia(historial_api)
         
         conversaciones[conversation_id]["messages"].append({
             "role": "user",
@@ -103,3 +132,4 @@ def eliminar_conversacion(conversation_id):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+    
