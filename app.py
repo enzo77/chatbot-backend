@@ -62,11 +62,13 @@ def chat():
         # Agregar nuevo mensaje del usuario
         historial_api.append({"role": "user", "content": user_message})
         
-        # Llamar a NVIDIA
+        # Llamar a NVIDIA con DeepSeek (más rápido)
         completion = client.chat.completions.create(
-            model="minimaxai/minimax-m2.7",
+            model="deepseek-ai/deepseek-v4-pro",
             messages=historial_api,
-            max_tokens=300,
+            max_tokens=1000,
+            temperature=0.7,
+            top_p=0.95
         )
         
         ai_response = completion.choices[0].message.content
@@ -97,7 +99,6 @@ def chat():
 def obtener_conversaciones():
     """Obtiene todas las conversaciones"""
     conversaciones = cargar_conversaciones()
-    # Devolver solo ID y primer mensaje
     lista = []
     for conv_id, conv in conversaciones.items():
         primer_mensaje = conv["messages"][0]["content"] if conv["messages"] else "Sin mensajes"
