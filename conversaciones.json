@@ -1,0 +1,18 @@
+{
+  "conv_1777487984217": {
+    "id": "conv_1777487984217",
+    "created": "2026-04-29T20:39:48.650614",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hola",
+        "timestamp": "2026-04-29T20:41:14.682277"
+      },
+      {
+        "role": "assistant",
+        "content": "\n\n¡Hola! 👋 ¿En qué puedo ayudarte hoy? Estoy aquí para asistirte con cualquier pregunta o tarea que tengas.",
+        "timestamp": "2026-04-29T20:41:14.682296"
+      }
+    ]
+  }
+}
