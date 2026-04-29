@@ -3,13 +3,16 @@ from flask_cors import CORS
 import os
 from datetime import datetime
 import json
-import requests
+import requests, base64
+
+invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+stream = True
 
 app = Flask(__name__)
 CORS(app)
 
 CONVERSACIONES_FILE = "conversaciones.json"
-NVIDIA_API_KEY = os.getenv("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")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 def cargar_conversaciones():
@@ -25,15 +28,18 @@ def guardar_conversaciones(conversaciones):
 def llamar_nvidia(messages):
     """Llama a la API de NVIDIA"""
     headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": "Bearer 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",
+        "Accept": "text/event-stream" if stream else "application/json"
     }
     
     payload = {
         "model": "mistralai/mistral-medium-3.5-128b",
-        "messages": messages,
-        "max_tokens": 1000,
-        "temperature": 0.7
+        "reasoning_effort": "high",
+        "messages": [{"role":"user","content":""}],
+        "max_tokens": 16384,
+        "temperature": 0.70,
+        "top_p": 1.00,
+        "stream": stream
     }
     
     try:
