@@ -64,9 +64,9 @@ def chat():
         
         # Llamar a NVIDIA
         completion = client.chat.completions.create(
-            model="minimaxai/minimax-m2.7",
+            model="mistralai/mistral-medium-3.5-128b",
             messages=historial_api,
-            max_tokens=300,
+            max_tokens=1000,
         )
         
         ai_response = completion.choices[0].message.content
