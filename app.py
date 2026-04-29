@@ -9,7 +9,7 @@ app = Flask(__name__)
 CORS(app)
 
 CONVERSACIONES_FILE = "conversaciones.json"
-NVIDIA_API_KEY = os.getenv("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")
+NVIDIA_API_KEY = os.getenv("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")
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 def cargar_conversaciones():
