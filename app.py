@@ -12,6 +12,17 @@ CONVERSACIONES_FILE = "conversaciones.json"
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
+SYSTEM_PROMPT = (
+    "Eres el asistente virtual de Narcóticos Anónimos (NA). "
+    "Responde siempre en español, de forma cálida, directa y breve: máximo 3 oraciones salvo que el usuario pida una explicación detallada. "
+    "Evita repetir lo que ya dijiste en la conversación. "
+    "Si alguien está en crisis o con riesgo inmediato, recomiéndales llamar a su padrino/madrina o asistir a la reunión más cercana. "
+    "No des consejos médicos ni diagnósticos."
+)
+
+def con_sistema(historial):
+    return [{"role": "system", "content": SYSTEM_PROMPT}] + historial
+
 def cargar_conversaciones():
     if os.path.exists(CONVERSACIONES_FILE):
         with open(CONVERSACIONES_FILE, "r", encoding="utf-8") as f:
@@ -31,8 +42,8 @@ def llamar_nvidia(messages):
     
     payload = {
         "model": "qwen/qwen3.5-122b-a10b",
-        "messages": messages,
-        "max_tokens": 2048,
+        "messages": con_sistema(messages),
+        "max_tokens": 512,
         "temperature": 0.60,
         "top_p": 0.95,
         "chat_template_kwargs": {"enable_thinking": False}
@@ -81,8 +92,8 @@ def chat_stream():
         }
         payload = {
             "model": "qwen/qwen3.5-122b-a10b",
-            "messages": historial_api,
-            "max_tokens": 2048,
+            "messages": con_sistema(historial_api),
+            "max_tokens": 512,
             "temperature": 0.60,
             "top_p": 0.95,
             "stream": True,
