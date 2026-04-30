@@ -294,6 +294,10 @@ def eliminar_conversacion(conversation_id):
         return jsonify({"success": True})
     return jsonify({"error": "Conversación no encontrada"}), 404
 
+@app.route("/api/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok"})
+
 @app.route("/api/db", methods=["GET"])
 def ver_db():
     conn = get_db()
