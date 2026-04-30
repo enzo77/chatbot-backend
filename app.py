@@ -22,7 +22,8 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS conversaciones (
             id TEXT PRIMARY KEY,
-            created TEXT NOT NULL
+            created TEXT NOT NULL,
+            user_id TEXT DEFAULT 'default'
         )
     """)
     cur.execute("""
@@ -33,6 +34,10 @@ def init_db():
             content TEXT NOT NULL,
             timestamp TEXT NOT NULL
         )
+    """)
+    # migración: agrega user_id si la tabla ya existía sin esa columna
+    cur.execute("""
+        ALTER TABLE conversaciones ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT 'default'
     """)
     conn.commit()
     cur.close()
@@ -53,12 +58,12 @@ SYSTEM_PROMPT = (
 def con_sistema(historial):
     return [{"role": "system", "content": SYSTEM_PROMPT}] + historial
 
-def db_crear_conversacion(conversation_id):
+def db_crear_conversacion(conversation_id, user_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO conversaciones (id, created) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-        (conversation_id, datetime.now().isoformat())
+        "INSERT INTO conversaciones (id, created, user_id) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
+        (conversation_id, datetime.now().isoformat(), user_id)
     )
     conn.commit()
     cur.close()
@@ -99,10 +104,13 @@ def db_obtener_conversacion(conversation_id):
         "messages": [dict(m) for m in mensajes]
     }
 
-def db_obtener_todas():
+def db_obtener_todas(user_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT id, created FROM conversaciones ORDER BY created DESC")
+    cur.execute(
+        "SELECT id, created FROM conversaciones WHERE user_id = %s ORDER BY created DESC",
+        (user_id,)
+    )
     convs = cur.fetchall()
     result = []
     for conv in convs:
@@ -166,7 +174,8 @@ def chat_stream():
     if not user_message or not conversation_id:
         return jsonify({"error": "Datos inválidos"}), 400
 
-    db_crear_conversacion(conversation_id)
+    user_id = data.get("user_id", "default")
+    db_crear_conversacion(conversation_id, user_id)
     conv = db_obtener_conversacion(conversation_id)
 
     historial_api = [
@@ -242,7 +251,8 @@ def chat():
         if not user_message:
             return jsonify({"error": "Mensaje vacío"}), 400
         
-        db_crear_conversacion(conversation_id)
+        user_id = data.get("user_id", "default")
+        db_crear_conversacion(conversation_id, user_id)
         conv = db_obtener_conversacion(conversation_id)
 
         historial_api = [
@@ -266,7 +276,8 @@ def chat():
 
 @app.route("/api/conversaciones", methods=["GET"])
 def obtener_conversaciones():
-    return jsonify(db_obtener_todas())
+    user_id = request.args.get("user_id", "default")
+    return jsonify(db_obtener_todas(user_id))
 
 @app.route("/api/conversaciones/<conversation_id>", methods=["GET"])
 def obtener_conversacion(conversation_id):
