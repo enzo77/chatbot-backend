@@ -283,6 +283,32 @@ def eliminar_conversacion(conversation_id):
         return jsonify({"success": True})
     return jsonify({"error": "Conversación no encontrada"}), 404
 
+@app.route("/api/db", methods=["GET"])
+def ver_db():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, created FROM conversaciones ORDER BY created DESC")
+    convs = cur.fetchall()
+    resultado = []
+    for conv in convs:
+        cur.execute(
+            "SELECT role, content, timestamp FROM mensajes WHERE conversation_id = %s ORDER BY id",
+            (conv["id"],)
+        )
+        mensajes = cur.fetchall()
+        resultado.append({
+            "id": conv["id"],
+            "created": conv["created"],
+            "total_mensajes": len(mensajes),
+            "mensajes": [dict(m) for m in mensajes]
+        })
+    cur.close()
+    conn.close()
+    return jsonify({
+        "total_conversaciones": len(resultado),
+        "conversaciones": resultado
+    })
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
