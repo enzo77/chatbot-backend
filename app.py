@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
 from datetime import datetime
@@ -49,6 +49,102 @@ def llamar_nvidia(messages):
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Error en API: {str(e)}"
+
+@app.route("/api/chat/stream", methods=["POST"])
+def chat_stream():
+    data = request.json
+    user_message = data.get("message")
+    conversation_id = data.get("conversation_id")
+
+    if not user_message or not conversation_id:
+        return jsonify({"error": "Datos inválidos"}), 400
+
+    conversaciones = cargar_conversaciones()
+    if conversation_id not in conversaciones:
+        conversaciones[conversation_id] = {
+            "id": conversation_id,
+            "created": datetime.now().isoformat(),
+            "messages": []
+        }
+
+    historial_api = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in conversaciones[conversation_id]["messages"]
+    ]
+    historial_api.append({"role": "user", "content": user_message})
+
+    def generate():
+        full_response = ""
+        headers = {
+            "Authorization": f"Bearer {NVIDIA_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "qwen/qwen3.5-122b-a10b",
+            "messages": historial_api,
+            "max_tokens": 2048,
+            "temperature": 0.60,
+            "top_p": 0.95,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+
+        try:
+            with requests.post(
+                f"{NVIDIA_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=60
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    decoded = line.decode("utf-8")
+                    if not decoded.startswith("data: "):
+                        continue
+                    chunk_str = decoded[6:]
+                    if chunk_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(chunk_str)
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            full_response += delta
+                            yield f"data: {json.dumps({'content': delta})}\n\n"
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return
+
+        convs = cargar_conversaciones()
+        if conversation_id not in convs:
+            convs[conversation_id] = {
+                "id": conversation_id,
+                "created": datetime.now().isoformat(),
+                "messages": []
+            }
+        convs[conversation_id]["messages"].append({
+            "role": "user",
+            "content": user_message,
+            "timestamp": datetime.now().isoformat()
+        })
+        convs[conversation_id]["messages"].append({
+            "role": "assistant",
+            "content": full_response,
+            "timestamp": datetime.now().isoformat()
+        })
+        guardar_conversaciones(convs)
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
