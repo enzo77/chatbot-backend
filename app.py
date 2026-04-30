@@ -4,11 +4,41 @@ import os
 from datetime import datetime
 import json
 import requests
+import psycopg2
+import psycopg2.extras
 
 app = Flask(__name__)
 CORS(app)
 
-CONVERSACIONES_FILE = "conversaciones.json"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS conversaciones (
+            id TEXT PRIMARY KEY,
+            created TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mensajes (
+            id SERIAL PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversaciones(id),
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -23,15 +53,81 @@ SYSTEM_PROMPT = (
 def con_sistema(historial):
     return [{"role": "system", "content": SYSTEM_PROMPT}] + historial
 
-def cargar_conversaciones():
-    if os.path.exists(CONVERSACIONES_FILE):
-        with open(CONVERSACIONES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def db_crear_conversacion(conversation_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO conversaciones (id, created) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
+        (conversation_id, datetime.now().isoformat())
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
-def guardar_conversaciones(conversaciones):
-    with open(CONVERSACIONES_FILE, "w", encoding="utf-8") as f:
-        json.dump(conversaciones, f, ensure_ascii=False, indent=2)
+def db_agregar_mensaje(conversation_id, role, content):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO mensajes (conversation_id, role, content, timestamp) VALUES (%s, %s, %s, %s)",
+        (conversation_id, role, content, datetime.now().isoformat())
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_obtener_conversacion(conversation_id):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT id, created FROM conversaciones WHERE id = %s", (conversation_id,)
+    )
+    conv = cur.fetchone()
+    if not conv:
+        cur.close()
+        conn.close()
+        return None
+    cur.execute(
+        "SELECT role, content, timestamp FROM mensajes WHERE conversation_id = %s ORDER BY id",
+        (conversation_id,)
+    )
+    mensajes = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {
+        "id": conv["id"],
+        "created": conv["created"],
+        "messages": [dict(m) for m in mensajes]
+    }
+
+def db_obtener_todas():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, created FROM conversaciones ORDER BY created DESC")
+    convs = cur.fetchall()
+    result = []
+    for conv in convs:
+        cur.execute(
+            "SELECT content FROM mensajes WHERE conversation_id = %s ORDER BY id LIMIT 1",
+            (conv["id"],)
+        )
+        primer_msg = cur.fetchone()
+        result.append({
+            "id": conv["id"],
+            "created": conv["created"],
+            "preview": (primer_msg["content"][:50] + "...") if primer_msg else "Sin mensajes"
+        })
+    cur.close()
+    conn.close()
+    return result
+
+def db_eliminar_conversacion(conversation_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM mensajes WHERE conversation_id = %s", (conversation_id,))
+    cur.execute("DELETE FROM conversaciones WHERE id = %s", (conversation_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def llamar_nvidia(messages):
     """Llama a la API de NVIDIA con modelo Qwen 3.5"""
@@ -70,17 +166,12 @@ def chat_stream():
     if not user_message or not conversation_id:
         return jsonify({"error": "Datos inválidos"}), 400
 
-    conversaciones = cargar_conversaciones()
-    if conversation_id not in conversaciones:
-        conversaciones[conversation_id] = {
-            "id": conversation_id,
-            "created": datetime.now().isoformat(),
-            "messages": []
-        }
+    db_crear_conversacion(conversation_id)
+    conv = db_obtener_conversacion(conversation_id)
 
     historial_api = [
         {"role": msg["role"], "content": msg["content"]}
-        for msg in conversaciones[conversation_id]["messages"]
+        for msg in conv["messages"]
     ]
     historial_api.append({"role": "user", "content": user_message})
 
@@ -130,24 +221,8 @@ def chat_stream():
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
-        convs = cargar_conversaciones()
-        if conversation_id not in convs:
-            convs[conversation_id] = {
-                "id": conversation_id,
-                "created": datetime.now().isoformat(),
-                "messages": []
-            }
-        convs[conversation_id]["messages"].append({
-            "role": "user",
-            "content": user_message,
-            "timestamp": datetime.now().isoformat()
-        })
-        convs[conversation_id]["messages"].append({
-            "role": "assistant",
-            "content": full_response,
-            "timestamp": datetime.now().isoformat()
-        })
-        guardar_conversaciones(convs)
+        db_agregar_mensaje(conversation_id, "user", user_message)
+        db_agregar_mensaje(conversation_id, "assistant", full_response)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return Response(
@@ -167,39 +242,19 @@ def chat():
         if not user_message:
             return jsonify({"error": "Mensaje vacío"}), 400
         
-        conversaciones = cargar_conversaciones()
-        
-        if conversation_id not in conversaciones:
-            conversaciones[conversation_id] = {
-                "id": conversation_id,
-                "created": datetime.now().isoformat(),
-                "messages": []
-            }
-        
-        historial_api = []
-        for msg in conversaciones[conversation_id]["messages"]:
-            historial_api.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
-        
+        db_crear_conversacion(conversation_id)
+        conv = db_obtener_conversacion(conversation_id)
+
+        historial_api = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in conv["messages"]
+        ]
         historial_api.append({"role": "user", "content": user_message})
-        
-        # Llamar a NVIDIA con Qwen
+
         ai_response = llamar_nvidia(historial_api)
-        
-        conversaciones[conversation_id]["messages"].append({
-            "role": "user",
-            "content": user_message,
-            "timestamp": datetime.now().isoformat()
-        })
-        conversaciones[conversation_id]["messages"].append({
-            "role": "assistant",
-            "content": ai_response,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        guardar_conversaciones(conversaciones)
+
+        db_agregar_mensaje(conversation_id, "user", user_message)
+        db_agregar_mensaje(conversation_id, "assistant", ai_response)
         
         return jsonify({
             "response": ai_response,
@@ -211,30 +266,20 @@ def chat():
 
 @app.route("/api/conversaciones", methods=["GET"])
 def obtener_conversaciones():
-    conversaciones = cargar_conversaciones()
-    lista = []
-    for conv_id, conv in conversaciones.items():
-        primer_mensaje = conv["messages"][0]["content"] if conv["messages"] else "Sin mensajes"
-        lista.append({
-            "id": conv_id,
-            "created": conv["created"],
-            "preview": primer_mensaje[:50] + "..."
-        })
-    return jsonify(lista)
+    return jsonify(db_obtener_todas())
 
 @app.route("/api/conversaciones/<conversation_id>", methods=["GET"])
 def obtener_conversacion(conversation_id):
-    conversaciones = cargar_conversaciones()
-    if conversation_id in conversaciones:
-        return jsonify(conversaciones[conversation_id])
+    conv = db_obtener_conversacion(conversation_id)
+    if conv:
+        return jsonify(conv)
     return jsonify({"error": "Conversación no encontrada"}), 404
 
 @app.route("/api/conversaciones/<conversation_id>", methods=["DELETE"])
 def eliminar_conversacion(conversation_id):
-    conversaciones = cargar_conversaciones()
-    if conversation_id in conversaciones:
-        del conversaciones[conversation_id]
-        guardar_conversaciones(conversaciones)
+    conv = db_obtener_conversacion(conversation_id)
+    if conv:
+        db_eliminar_conversacion(conversation_id)
         return jsonify({"success": True})
     return jsonify({"error": "Conversación no encontrada"}), 404
 
