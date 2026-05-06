@@ -324,6 +324,20 @@ def ver_db():
         "conversaciones": resultado
     })
 
+@app.route("/api/mensajes/recientes", methods=["GET"])
+def mensajes_recientes():
+    limite = request.args.get("n", 20, type=int)
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM mensajes ORDER BY id DESC LIMIT %s",
+        (limite,)
+    )
+    mensajes = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([dict(m) for m in mensajes])
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
