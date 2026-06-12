@@ -1,49 +1,24 @@
-from flask import Flask, request, jsonify, Response, stream_with_context
-from flask_cors import CORS
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 from datetime import datetime
 import json
 import requests
-import psycopg2
-import psycopg2.extras
 
-app = Flask(__name__)
-CORS(app)
+app = FastAPI(title="ChANtbot API")
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
-
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS conversaciones (
-            id TEXT PRIMARY KEY,
-            created TEXT NOT NULL,
-            user_id TEXT DEFAULT 'default'
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS mensajes (
-            id SERIAL PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversaciones(id),
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        )
-    """)
-    # migración: agrega user_id si la tabla ya existía sin esa columna
-    cur.execute("""
-        ALTER TABLE conversaciones ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT 'default'
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-init_db()
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -55,87 +30,69 @@ SYSTEM_PROMPT = (
     "No des consejos médicos ni diagnósticos."
 )
 
+# Almacenamiento en memoria: se pierde cuando el servidor se reinicia.
+# Requiere correr con UN solo worker (cada proceso tendría su propia copia).
+# Estructura: {conversation_id: {"id", "created", "user_id", "messages": [...]}}
+conversaciones = {}
+
+
+class ChatRequest(BaseModel):
+    message: str | None = None
+    conversation_id: str | None = None
+    user_id: str = "default"
+
+
 def con_sistema(historial):
     return [{"role": "system", "content": SYSTEM_PROMPT}] + historial
 
-def db_crear_conversacion(conversation_id, user_id):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO conversaciones (id, created, user_id) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
-        (conversation_id, datetime.now().isoformat(), user_id)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
 
-def db_agregar_mensaje(conversation_id, role, content):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO mensajes (conversation_id, role, content, timestamp) VALUES (%s, %s, %s, %s)",
-        (conversation_id, role, content, datetime.now().isoformat())
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+def mem_crear_conversacion(conversation_id, user_id):
+    if conversation_id not in conversaciones:
+        conversaciones[conversation_id] = {
+            "id": conversation_id,
+            "created": datetime.now().isoformat(),
+            "user_id": user_id,
+            "messages": []
+        }
 
-def db_obtener_conversacion(conversation_id):
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT id, created FROM conversaciones WHERE id = %s", (conversation_id,)
-    )
-    conv = cur.fetchone()
+
+def mem_agregar_mensaje(conversation_id, role, content):
+    conversaciones[conversation_id]["messages"].append({
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+def mem_obtener_conversacion(conversation_id):
+    conv = conversaciones.get(conversation_id)
     if not conv:
-        cur.close()
-        conn.close()
         return None
-    cur.execute(
-        "SELECT role, content, timestamp FROM mensajes WHERE conversation_id = %s ORDER BY id",
-        (conversation_id,)
-    )
-    mensajes = cur.fetchall()
-    cur.close()
-    conn.close()
     return {
         "id": conv["id"],
         "created": conv["created"],
-        "messages": [dict(m) for m in mensajes]
+        "messages": conv["messages"]
     }
 
-def db_obtener_todas(user_id):
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT id, created FROM conversaciones WHERE user_id = %s ORDER BY created DESC",
-        (user_id,)
-    )
-    convs = cur.fetchall()
+
+def mem_obtener_todas(user_id):
     result = []
-    for conv in convs:
-        cur.execute(
-            "SELECT content FROM mensajes WHERE conversation_id = %s ORDER BY id LIMIT 1",
-            (conv["id"],)
-        )
-        primer_msg = cur.fetchone()
+    for conv in conversaciones.values():
+        if conv["user_id"] != user_id:
+            continue
+        primer_msg = conv["messages"][0]["content"] if conv["messages"] else None
         result.append({
             "id": conv["id"],
             "created": conv["created"],
-            "preview": (primer_msg["content"][:50] + "...") if primer_msg else "Sin mensajes"
+            "preview": (primer_msg[:50] + "...") if primer_msg else "Sin mensajes"
         })
-    cur.close()
-    conn.close()
+    result.sort(key=lambda c: c["created"], reverse=True)
     return result
 
-def db_eliminar_conversacion(conversation_id):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM mensajes WHERE conversation_id = %s", (conversation_id,))
-    cur.execute("DELETE FROM conversaciones WHERE id = %s", (conversation_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
+
+def mem_eliminar_conversacion(conversation_id):
+    conversaciones.pop(conversation_id, None)
+
 
 def llamar_nvidia(messages):
     """Llama a la API de NVIDIA con modelo Qwen 3.5"""
@@ -143,7 +100,7 @@ def llamar_nvidia(messages):
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     payload = {
         "model": "qwen/qwen3.5-122b-a10b",
         "messages": con_sistema(messages),
@@ -152,7 +109,7 @@ def llamar_nvidia(messages):
         "top_p": 0.95,
         "chat_template_kwargs": {"enable_thinking": False}
     }
-    
+
     try:
         response = requests.post(
             f"{NVIDIA_BASE_URL}/chat/completions",
@@ -165,18 +122,17 @@ def llamar_nvidia(messages):
     except Exception as e:
         return f"Error en API: {str(e)}"
 
-@app.route("/api/chat/stream", methods=["POST"])
-def chat_stream():
-    data = request.json
-    user_message = data.get("message")
-    conversation_id = data.get("conversation_id")
+
+@app.post("/api/chat/stream")
+def chat_stream(data: ChatRequest):
+    user_message = data.message
+    conversation_id = data.conversation_id
 
     if not user_message or not conversation_id:
-        return jsonify({"error": "Datos inválidos"}), 400
+        return JSONResponse({"error": "Datos inválidos"}, status_code=400)
 
-    user_id = data.get("user_id", "default")
-    db_crear_conversacion(conversation_id, user_id)
-    conv = db_obtener_conversacion(conversation_id)
+    mem_crear_conversacion(conversation_id, data.user_id)
+    conv = mem_obtener_conversacion(conversation_id)
 
     historial_api = [
         {"role": msg["role"], "content": msg["content"]}
@@ -230,30 +186,28 @@ def chat_stream():
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
-        db_agregar_mensaje(conversation_id, "user", user_message)
-        db_agregar_mensaje(conversation_id, "assistant", full_response)
+        mem_agregar_mensaje(conversation_id, "user", user_message)
+        mem_agregar_mensaje(conversation_id, "assistant", full_response)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
+@app.post("/api/chat")
+def chat(data: ChatRequest):
     try:
-        data = request.json
-        user_message = data.get("message")
-        conversation_id = data.get("conversation_id")
-        
+        user_message = data.message
+        conversation_id = data.conversation_id
+
         if not user_message:
-            return jsonify({"error": "Mensaje vacío"}), 400
-        
-        user_id = data.get("user_id", "default")
-        db_crear_conversacion(conversation_id, user_id)
-        conv = db_obtener_conversacion(conversation_id)
+            return JSONResponse({"error": "Mensaje vacío"}, status_code=400)
+
+        mem_crear_conversacion(conversation_id, data.user_id)
+        conv = mem_obtener_conversacion(conversation_id)
 
         historial_api = [
             {"role": msg["role"], "content": msg["content"]}
@@ -263,81 +217,45 @@ def chat():
 
         ai_response = llamar_nvidia(historial_api)
 
-        db_agregar_mensaje(conversation_id, "user", user_message)
-        db_agregar_mensaje(conversation_id, "assistant", ai_response)
-        
-        return jsonify({
+        mem_agregar_mensaje(conversation_id, "user", user_message)
+        mem_agregar_mensaje(conversation_id, "assistant", ai_response)
+
+        return {
             "response": ai_response,
             "conversation_id": conversation_id
-        })
-    
+        }
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-@app.route("/api/conversaciones", methods=["GET"])
-def obtener_conversaciones():
-    user_id = request.args.get("user_id", "default")
-    return jsonify(db_obtener_todas(user_id))
 
-@app.route("/api/conversaciones/<conversation_id>", methods=["GET"])
-def obtener_conversacion(conversation_id):
-    conv = db_obtener_conversacion(conversation_id)
+@app.get("/api/conversaciones")
+def obtener_conversaciones(user_id: str = "default"):
+    return mem_obtener_todas(user_id)
+
+
+@app.get("/api/conversaciones/{conversation_id}")
+def obtener_conversacion(conversation_id: str):
+    conv = mem_obtener_conversacion(conversation_id)
     if conv:
-        return jsonify(conv)
-    return jsonify({"error": "Conversación no encontrada"}), 404
+        return conv
+    return JSONResponse({"error": "Conversación no encontrada"}, status_code=404)
 
-@app.route("/api/conversaciones/<conversation_id>", methods=["DELETE"])
-def eliminar_conversacion(conversation_id):
-    conv = db_obtener_conversacion(conversation_id)
-    if conv:
-        db_eliminar_conversacion(conversation_id)
-        return jsonify({"success": True})
-    return jsonify({"error": "Conversación no encontrada"}), 404
 
-@app.route("/api/ping", methods=["GET"])
+@app.delete("/api/conversaciones/{conversation_id}")
+def eliminar_conversacion(conversation_id: str):
+    if conversation_id in conversaciones:
+        mem_eliminar_conversacion(conversation_id)
+        return {"success": True}
+    return JSONResponse({"error": "Conversación no encontrada"}, status_code=404)
+
+
+@app.get("/api/ping")
 def ping():
-    return jsonify({"status": "ok"})
+    return {"status": "ok"}
 
-@app.route("/api/db", methods=["GET"])
-def ver_db():
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT id, created FROM conversaciones ORDER BY created DESC")
-    convs = cur.fetchall()
-    resultado = []
-    for conv in convs:
-        cur.execute(
-            "SELECT role, content, timestamp FROM mensajes WHERE conversation_id = %s ORDER BY id",
-            (conv["id"],)
-        )
-        mensajes = cur.fetchall()
-        resultado.append({
-            "id": conv["id"],
-            "created": conv["created"],
-            "total_mensajes": len(mensajes),
-            "mensajes": [dict(m) for m in mensajes]
-        })
-    cur.close()
-    conn.close()
-    return jsonify({
-        "total_conversaciones": len(resultado),
-        "conversaciones": resultado
-    })
-
-@app.route("/api/mensajes/recientes", methods=["GET"])
-def mensajes_recientes():
-    limite = request.args.get("n", 20, type=int)
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM mensajes ORDER BY id DESC LIMIT %s",
-        (limite,)
-    )
-    mensajes = cur.fetchall()
-    cur.close()
-    conn.close()
-    return jsonify([dict(m) for m in mensajes])
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    uvicorn.run(app, host="0.0.0.0", port=port)
