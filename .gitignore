@@ -1,0 +1,8 @@
+# Variables de entorno (¡nunca subir, contienen secretos!)
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
